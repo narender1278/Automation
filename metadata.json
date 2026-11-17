@@ -1,0 +1,8 @@
+{
+  "name": "Storyline Director",
+  "description": "Six-stage YouTube strategy, faceless scriptwriting, Three.js 3D lip-sync and action studio, thumbnail lab, and 60-day launch roadmap for motivational storytelling channels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
