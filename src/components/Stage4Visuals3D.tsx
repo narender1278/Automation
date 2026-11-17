@@ -16,12 +16,11 @@ import {
 } from 'lucide-react';
 import { Stage3DViewport, type Stage3DViewportHandle } from './Stage3DViewport';
 import {
-  convertVideoFormat,
   startWorkerInterval,
   triggerBlobDownload,
-  workerDelay,
   type VideoExportFormat,
 } from '../utils/videoExport';
+import { renderScenesDeterministically } from '../utils/offlineVideoRenderer';
 import type {
   CameraPreset,
   CharacterAction,
@@ -71,12 +70,15 @@ const SET_OPTIONS: { id: StageSet; label: string }[] = [
   { id: 'philosopher_pillar', label: 'Pillar' },
   { id: 'summit_overlook', label: 'Summit' },
   { id: 'ancient_archive', label: 'Archive' },
+  { id: 'crossroads_cafe', label: 'Crossroads' },
 ];
 
 const VOICES: VoiceName[] = ['Charon', 'Kore', 'Fenrir', 'Puck', 'Zephyr'];
 
 const STORY_ACTIVITY_OPTIONS: { id: '' | StoryActivity; label: string }[] = [
   { id: '', label: 'Auto (From Script)' },
+  { id: 'crossroads_meeting', label: 'Friends Meet & Café' },
+  { id: 'mentorship_dialogue', label: 'Mentor Walk' },
   { id: 'orator_walk', label: 'Orator Walk' },
   { id: 'forge_labor', label: 'Forge Hammer' },
   { id: 'climb_ascent', label: 'Climb Steps' },
@@ -87,22 +89,22 @@ const STORY_ACTIVITY_OPTIONS: { id: '' | StoryActivity; label: string }[] = [
 
 const FALLBACK_SCENE: SceneItem = {
   sceneNumber: 1,
-  title: 'Stage Calibration Scene',
+  title: 'Crossroads Meeting & Handshake',
   narrationCue:
-    'Every great shift begins in the quiet hour before anyone else believes in your discipline.',
+    'Two paths cross when we slow down long enough to listen, sit together at the table, and part with a clear promise.',
   visualDescription:
-    'The narrator stands grounded on the illuminated stone dais as warm amber light traces the silhouette.',
+    'Two friends walk from opposite ends of the street, meet at the interjunction, walk to the roadside café table, sit, nod, shake hands, and wave goodbye.',
   imagePrompt:
-    'Cinematic dark obsidian studio with a stoic narrator standing by a lantern-lit stone pillar, warm amber rim lighting, 35mm lens.',
-  videoPrompt: 'Slow subtle push-in from medium shot to close-up during the opening line.',
-  brollSuggestion: 'Slow-motion glowing embers rising against dark slate.',
-  onScreenText: 'BEFORE ANYONE BELIEVED',
-  durationSeconds: 12,
+    'Cinematic dark evening crossroads with a warm lamp-lit sidewalk bistro table, two friends conversing before parting ways, 35mm filmic lighting.',
+  videoPrompt: 'Wide crossroads tracking shot transitioning to a warm two-shot at the sidewalk café table.',
+  brollSuggestion: 'Warm streetlamp reflections over twilight asphalt and café table.',
+  onScreenText: 'TWO PATHS AT THE CROSSROADS',
+  durationSeconds: 18,
   action: 'storyteller_gesture',
-  storyActivity: 'orator_walk',
+  storyActivity: 'crossroads_meeting',
   cameraPreset: 'medium_shot',
   lightingMood: 'warm_dawn',
-  stageSet: 'philosopher_pillar',
+  stageSet: 'crossroads_cafe',
   voiceName: 'Charon',
   lipSyncIntensity: 1.05,
 };
@@ -157,8 +159,6 @@ export function Stage4Visuals3D({
   const keepaliveOscRef = useRef<OscillatorNode | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<BlobPart[]>([]);
   const lipWorkerStopRef = useRef<(() => void) | null>(null);
   const ttsCacheRef = useRef<Map<string, string>>(new Map());
   const cadenceTimerRef = useRef<number>(0);
@@ -188,7 +188,6 @@ export function Stage4Visuals3D({
     }
     if (!mediaStreamDestRef.current) {
       const dest = ctx.createMediaStreamDestination();
-      // Zero-gain keepalive oscillator ensures MediaRecorder audio track never drops between scenes
       const osc = ctx.createOscillator();
       const silentGain = ctx.createGain();
       silentGain.gain.value = 0;
@@ -221,10 +220,7 @@ export function Stage4Visuals3D({
     sequenceRef.current.active = false;
     setIsSequencePlaying(false);
     resetActiveAudio();
-    if (exportRef.current.active && mediaRecorderRef.current?.state === 'recording') {
-      exportRef.current.active = false;
-      mediaRecorderRef.current.stop();
-    }
+    exportRef.current.active = false;
   };
 
   useEffect(() => {
@@ -232,14 +228,6 @@ export function Stage4Visuals3D({
       sequenceRef.current.active = false;
       exportRef.current.active = false;
       resetActiveAudio();
-      if (mediaRecorderRef.current?.state === 'recording') {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch {
-          // ignore on unmount
-        }
-      }
-      viewportRef.current?.stopVideoCaptureStream();
       try {
         keepaliveOscRef.current?.stop();
       } catch {
@@ -443,20 +431,14 @@ export function Stage4Visuals3D({
   };
 
   const handleExportVideo = async () => {
-    // Allow clicking again mid-export to stop early and save the recorded portion
     if (isExportingVideo) {
-      sequenceRef.current.active = false;
       exportRef.current.active = false;
-      setIsSequencePlaying(false);
-      resetActiveAudio();
-      if (mediaRecorderRef.current?.state === 'recording') {
-        mediaRecorderRef.current.stop();
-      }
+      setExportProgress('Stopping...');
       return;
     }
 
-    if (typeof MediaRecorder === 'undefined') {
-      setTtsError('This browser does not support WebM MediaRecorder video export.');
+    if (!viewportRef.current) {
+      setTtsError('3D viewport is not initialized yet.');
       return;
     }
 
@@ -464,146 +446,40 @@ export function Stage4Visuals3D({
     setTtsError(null);
     setIsExportingVideo(true);
     exportRef.current.active = true;
+    const targetFormat = exportFormat;
 
     try {
-      // 1. Pre-synthesize voiceover audio for all scenes so scene transitions have zero network gap
-      for (let i = 0; i < scenes.length; i++) {
-        if (!exportRef.current.active) {
-          setIsExportingVideo(false);
-          setExportProgress(null);
-          return;
-        }
-        const sc = scenes[i];
-        const cacheKey = `${sc.voiceName}::${sc.narrationCue}`;
-        if (!ttsCacheRef.current.has(cacheKey)) {
-          setExportProgress(`Preparing audio ${i + 1}/${scenes.length}`);
+      const outBlob = await renderScenesDeterministically({
+        scenes,
+        viewport: viewportRef.current,
+        format: targetFormat,
+        showOnScreenText,
+        fps: 24,
+        shouldCancel: () => !exportRef.current.active,
+        onSceneStart: (sc) => setSelectedSceneNum(sc.sceneNumber),
+        onProgress: (label) => setExportProgress(label),
+        resolveAudioSrc: async (sc) => {
+          const cacheKey = `${sc.voiceName}::${sc.narrationCue}`;
+          const cached = ttsCacheRef.current.get(cacheKey);
+          if (cached) return cached;
           try {
-            await synthesizeSceneWav(sc);
+            return await synthesizeSceneWav(sc);
           } catch {
-            // Will gracefully fall back to silent lip-sync cadence during recording
+            return null;
           }
-        }
+        },
+      });
+
+      if (outBlob && outBlob.size > 0 && exportRef.current.active) {
+        const baseName = visualPlan ? 'storyline-3d-video' : 'storyline-3d-demo';
+        triggerBlobDownload(outBlob, `${baseName}.${targetFormat}`);
       }
-
-      if (!exportRef.current.active) {
-        setIsExportingVideo(false);
-        setExportProgress(null);
-        return;
-      }
-
-      // 2. Wire 3D 1280x720 compositor video stream + WebAudio destination stream
-      const { dest } = await ensureAudioRouting();
-      const videoStream = viewportRef.current?.startVideoCaptureStream();
-      if (!videoStream) {
-        throw new Error('3D viewport capture stream could not be initialized.');
-      }
-
-      const combinedStream = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks(),
-      ]);
-
-      const mimeCandidates = [
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm',
-      ];
-      const chosenMime = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m));
-      const recorder = new MediaRecorder(
-        combinedStream,
-        chosenMime
-          ? { mimeType: chosenMime, videoBitsPerSecond: 5_000_000 }
-          : { videoBitsPerSecond: 5_000_000 },
-      );
-
-      recordedChunksRef.current = [];
-      mediaRecorderRef.current = recorder;
-      const targetFormat = exportFormat;
-
-      recorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) {
-          recordedChunksRef.current.push(ev.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        viewportRef.current?.stopVideoCaptureStream();
-        const webmBlob = new Blob(recordedChunksRef.current, {
-          type: recorder.mimeType || 'video/webm',
-        });
-        recordedChunksRef.current = [];
-        mediaRecorderRef.current = null;
-        exportRef.current.active = false;
-        sequenceRef.current.active = false;
-        setIsSequencePlaying(false);
-
-        void (async () => {
-          try {
-            if (webmBlob.size > 0) {
-              const baseName = visualPlan ? 'storyline-3d-video' : 'storyline-3d-demo';
-              if (targetFormat !== 'webm') {
-                setExportProgress(`Converting to ${targetFormat.toUpperCase()}...`);
-                try {
-                  const res = await convertVideoFormat(webmBlob, targetFormat);
-                  triggerBlobDownload(res.blob, `${baseName}.${res.format}`);
-                } catch (convErr) {
-                  setTtsError(
-                    convErr instanceof Error
-                      ? `${convErr.message} — downloaded .webm fallback.`
-                      : 'Format conversion failed — downloaded .webm fallback.',
-                  );
-                  triggerBlobDownload(webmBlob, `${baseName}.webm`);
-                }
-              } else {
-                triggerBlobDownload(webmBlob, `${baseName}.webm`);
-              }
-            }
-          } finally {
-            setIsExportingVideo(false);
-            setExportProgress(null);
-          }
-        })();
-      };
-
-      recorder.start(250);
-
-      // 3. Play sequentially through all scenes from Scene 1 using unthrottled Worker delays
-      sequenceRef.current.active = true;
-      setIsSequencePlaying(true);
-
-      const recordSceneAt = (idx: number) => {
-        if (!exportRef.current.active || !sequenceRef.current.active || idx >= scenes.length) {
-          sequenceRef.current.active = false;
-          setIsSequencePlaying(false);
-          resetActiveAudio();
-          void workerDelay(300).then(() => {
-            if (recorder.state === 'recording') {
-              recorder.stop();
-            }
-          });
-          return;
-        }
-        const sc = scenes[idx];
-        setSelectedSceneNum(sc.sceneNumber);
-        setExportProgress(
-          `Recording S${String(sc.sceneNumber).padStart(2, '0')} (${idx + 1}/${scenes.length})`,
-        );
-        void playSceneAudio(sc, () => {
-          if (exportRef.current.active && sequenceRef.current.active) {
-            void workerDelay(180).then(() => recordSceneAt(idx + 1));
-          }
-        });
-      };
-
-      recordSceneAt(0);
     } catch (err) {
-      viewportRef.current?.stopVideoCaptureStream();
+      setTtsError(err instanceof Error ? err.message : 'Failed to export 3D video.');
+    } finally {
       exportRef.current.active = false;
-      sequenceRef.current.active = false;
-      setIsSequencePlaying(false);
       setIsExportingVideo(false);
       setExportProgress(null);
-      setTtsError(err instanceof Error ? err.message : 'Failed to export 3D video.');
     }
   };
 
@@ -652,6 +528,8 @@ export function Stage4Visuals3D({
             ref={viewportRef}
             action={activeScene.action}
             storyActivity={activeScene.storyActivity}
+            directorBlocks={activeScene.directorBlocks}
+            sceneDurationSec={activeScene.durationSeconds}
             scriptCue={`${activeScene.title} ${activeScene.visualDescription} ${activeScene.narrationCue}`}
             cameraPreset={activeScene.cameraPreset}
             lightingMood={activeScene.lightingMood}
@@ -856,12 +734,15 @@ export function Stage4Visuals3D({
               </span>
               <select
                 aria-label="Story Action Choreography"
-                value={activeScene.storyActivity || ''}
-                onChange={(e) =>
-                  patchActiveScene({
-                    storyActivity: (e.target.value || undefined) as StoryActivity | undefined,
-                  })
-                }
+                value={activeScene.directorBlocks?.length ? '' : activeScene.storyActivity || ''}
+                onChange={(e) => {
+                  const nextAct = (e.target.value || undefined) as StoryActivity | undefined;
+                  patchActiveScene(
+                    nextAct === 'crossroads_meeting'
+                      ? { storyActivity: nextAct, directorBlocks: undefined, stageSet: 'crossroads_cafe' }
+                      : { storyActivity: nextAct, directorBlocks: undefined },
+                  );
+                }}
                 className="rounded border border-white/15 bg-[#0B0F19] px-2 py-1 text-xs font-medium text-emerald-300 focus:border-amber-500/60 focus:outline-none"
               >
                 {STORY_ACTIVITY_OPTIONS.map((opt) => (

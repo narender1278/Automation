@@ -25,16 +25,17 @@ import {
 } from '../utils/videoVaultDb';
 import {
   convertVideoFormat,
-  startWorkerInterval,
   triggerBlobDownload,
   workerDelay,
   type VideoExportFormat,
 } from '../utils/videoExport';
+import { renderScenesDeterministically } from '../utils/offlineVideoRenderer';
 import type {
   AutomationSettings,
   CameraPreset,
   CharacterAction,
   DailyEpisode,
+  DirectorBeat,
   LightingMood,
   SceneItem,
   StageSet,
@@ -201,6 +202,8 @@ export function DailyVaultView({
   const [monitorScene, setMonitorScene] = useState<{
     action: CharacterAction;
     storyActivity?: StoryActivity;
+    directorBlocks?: DirectorBeat[];
+    durationSeconds?: number;
     scriptCue?: string;
     cameraPreset: CameraPreset;
     lightingMood: LightingMood;
@@ -236,12 +239,6 @@ export function DailyVaultView({
   const [renderJob, setRenderJob] = useState<ActiveRenderJob | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const cancelRenderRef = useRef(false);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const destNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-  const keepaliveOscRef = useRef<OscillatorNode | null>(null);
-  const activeRecorderRef = useRef<MediaRecorder | null>(null);
-  const activeAudioElRef = useRef<HTMLAudioElement | null>(null);
-  const activeWorkerStopRef = useRef<(() => void) | null>(null);
 
   const settings = vault?.settings;
   const episodes = vault?.episodes ?? [];
@@ -266,199 +263,34 @@ export function DailyVaultView({
   useEffect(() => {
     return () => {
       cancelRenderRef.current = true;
-      activeWorkerStopRef.current?.();
-      activeWorkerStopRef.current = null;
-      if (activeAudioElRef.current) {
-        activeAudioElRef.current.pause();
-      }
-      if (activeRecorderRef.current?.state === 'recording') {
-        try {
-          activeRecorderRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
-      viewportRef.current?.stopVideoCaptureStream();
-      try {
-        keepaliveOscRef.current?.stop();
-      } catch {
-        // ignore
-      }
-      audioCtxRef.current?.close().catch(() => {});
+      viewportRef.current?.setManualRenderMode(false);
     };
   }, []);
 
-  const ensureAudioDestination = async () => {
-    if (!audioCtxRef.current) {
-      const Ctx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      audioCtxRef.current = new Ctx();
-    }
-    const ctx = audioCtxRef.current;
-    if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
-    if (!destNodeRef.current) {
-      const dest = ctx.createMediaStreamDestination();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      osc.connect(gain);
-      gain.connect(dest);
-      osc.start();
-      keepaliveOscRef.current = osc;
-      destNodeRef.current = dest;
-    }
-    return { ctx, dest: destNodeRef.current };
-  };
-
-  const playEpisodeSceneThroughAnalyser = async (
-    episodeId: string,
-    scene: SceneItem,
-  ): Promise<void> => {
-    const { ctx, dest } = await ensureAudioDestination();
-    setMonitorScene({
-      action: scene.action,
-      storyActivity: scene.storyActivity,
-      scriptCue: `${scene.title} ${scene.visualDescription} ${scene.narrationCue}`,
-      cameraPreset: scene.cameraPreset,
-      lightingMood: scene.lightingMood,
-      stageSet: scene.stageSet,
-      intensity: scene.lipSyncIntensity || 1.05,
-      onScreenText: scene.onScreenText || '',
-    });
-
-    const audioUrl = `/api/vault/episodes/${episodeId}/audio/${scene.sceneNumber}`;
-
-    return new Promise((resolve) => {
-      let resolved = false;
-      const finish = () => {
-        if (resolved) return;
-        resolved = true;
-        activeWorkerStopRef.current?.();
-        activeWorkerStopRef.current = null;
-        lipSyncRef.current.isPlaying = false;
-        lipSyncRef.current.jawOpen = 0;
-        lipSyncRef.current.lipSpread = 0;
-        resolve();
-      };
-
-      const runSilentFallback = () => {
-        const durMs = Math.min(Math.max(scene.durationSeconds * 1000, 3000), 6500);
-        const start = performance.now();
-        lipSyncRef.current.isPlaying = true;
-        activeWorkerStopRef.current?.();
-        activeWorkerStopRef.current = startWorkerInterval(() => {
-          if (cancelRenderRef.current) {
-            finish();
-            return;
-          }
-          const elapsed = performance.now() - start;
-          if (elapsed >= durMs) {
-            finish();
-            return;
-          }
-          const s = elapsed / 1000;
-          const syl = Math.max(0, Math.sin(s * 14) * 0.6 + Math.sin(s * 7.5) * 0.4);
-          lipSyncRef.current.jawOpen = Math.min(1, syl * (scene.lipSyncIntensity || 1));
-          lipSyncRef.current.lipSpread = Math.abs(Math.cos(s * 9)) * lipSyncRef.current.jawOpen;
-        }, 33);
-      };
-
-      try {
-        const audio = new Audio(audioUrl);
-        audio.crossOrigin = 'anonymous';
-        activeAudioElRef.current = audio;
-
-        const source = ctx.createMediaElementSource(audio);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 64;
-        analyser.smoothingTimeConstant = 0.65;
-        source.connect(analyser);
-        analyser.connect(ctx.destination);
-        analyser.connect(dest);
-
-        const freqData = new Uint8Array(analyser.frequencyBinCount);
-        lipSyncRef.current.isPlaying = true;
-
-        const pumpLips = () => {
-          if (cancelRenderRef.current) {
-            audio.pause();
-            try {
-              source.disconnect();
-              analyser.disconnect();
-            } catch {
-              // ignore
-            }
-            finish();
-            return;
-          }
-          if (audio.paused || audio.ended) return;
-          analyser.getByteFrequencyData(freqData);
-          let sum = 0;
-          for (let i = 1; i < 14; i++) sum += freqData[i] || 0;
-          const avg = sum / (13 * 255);
-          lipSyncRef.current.jawOpen = Math.min(1, avg * 2.4 * (scene.lipSyncIntensity || 1));
-          lipSyncRef.current.lipSpread = Math.min(1, ((freqData[6] || 0) / 255) * 1.6);
-        };
-
-        audio.onended = () => {
-          try {
-            source.disconnect();
-            analyser.disconnect();
-          } catch {
-            // ignore
-          }
-          finish();
-        };
-        audio.onerror = () => {
-          try {
-            source.disconnect();
-            analyser.disconnect();
-          } catch {
-            // ignore
-          }
-          runSilentFallback();
-        };
-
-        audio
-          .play()
-          .then(() => {
-            activeWorkerStopRef.current?.();
-            activeWorkerStopRef.current = startWorkerInterval(pumpLips, 33);
-          })
-          .catch(() => {
-            runSilentFallback();
-          });
-      } catch {
-        runSilentFallback();
-      }
-    });
-  };
-
   const downloadBlobInSelectedFormat = async (
-    webmBlob: Blob,
+    sourceBlob: Blob,
     baseFilename: string,
     targetFormat: VideoExportFormat,
     busyKey?: string,
   ) => {
-    if (targetFormat === 'webm') {
-      triggerBlobDownload(webmBlob, `${baseFilename}.webm`);
-      return;
-    }
     if (busyKey) setConvertingKey(busyKey);
     setRenderError(null);
     try {
-      const converted = await convertVideoFormat(webmBlob, targetFormat);
+      const converted = await convertVideoFormat(sourceBlob, targetFormat);
       triggerBlobDownload(converted.blob, `${baseFilename}.${converted.format}`);
     } catch (err) {
+      const srcType = (sourceBlob.type || '').toLowerCase();
+      const fallbackExt = srcType.includes('mp4')
+        ? 'mp4'
+        : srcType.includes('matroska')
+          ? 'mkv'
+          : 'webm';
       setRenderError(
         err instanceof Error
-          ? `${err.message} — downloaded .webm fallback.`
-          : 'Conversion failed — downloaded .webm fallback.',
+          ? `${err.message} — downloaded .${fallbackExt} fallback.`
+          : `Conversion failed — downloaded .${fallbackExt} fallback.`,
       );
-      triggerBlobDownload(webmBlob, `${baseFilename}.webm`);
+      triggerBlobDownload(sourceBlob, `${baseFilename}.${fallbackExt}`);
     } finally {
       if (busyKey) setConvertingKey(null);
     }
@@ -472,14 +304,16 @@ export function DailyVaultView({
     autoDownloadBase?: string,
     downloadFormat?: VideoExportFormat,
   ): Promise<boolean> => {
-    if (typeof MediaRecorder === 'undefined') {
-      setRenderError('Browser does not support MediaRecorder WebM export.');
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      setRenderError('3D viewport not ready.');
       return false;
     }
 
     setRenderError(null);
     cancelRenderRef.current = false;
 
+    const targetFormat = downloadFormat || exportFormat;
     const episodeTitle =
       episode.packagingLab?.topThree?.[0]?.title || episode.idea.title;
 
@@ -488,18 +322,17 @@ export function DailyVaultView({
       episodeId: episode.id,
       episodeTitle,
       sceneNumber: scenesToRender.length === 1 ? scenesToRender[0].sceneNumber : undefined,
-      progressLabel: `Initializing 3D camera & audio...`,
+      progressLabel: `Preparing 24fps A/V sync renderer...`,
     });
 
     try {
-      const { dest } = await ensureAudioDestination();
-
-      // Move viewport to first scene and let camera settle briefly before recording
       const first = scenesToRender[0];
       if (first) {
         setMonitorScene({
           action: first.action,
           storyActivity: first.storyActivity,
+          directorBlocks: first.directorBlocks,
+          durationSeconds: first.durationSeconds,
           scriptCue: `${first.title} ${first.visualDescription} ${first.narrationCue}`,
           cameraPreset: first.cameraPreset,
           lightingMood: first.lightingMood,
@@ -508,80 +341,53 @@ export function DailyVaultView({
           onScreenText: first.onScreenText || '',
         });
       }
-      await workerDelay(350);
+      await workerDelay(250);
 
       // Capture clean PNG snapshot of first scene for thumbnails automatically
-      const snap = viewportRef.current?.captureFramePng();
+      const snap = viewport.captureFramePng();
       if (snap) {
         setEpisodeSnapshots((prev) => ({ ...prev, [episode.id]: snap }));
       }
 
-      const videoStream = viewportRef.current?.startVideoCaptureStream();
-      if (!videoStream) {
-        throw new Error('Could not open 3D compositor stream.');
-      }
-
-      const combinedStream = new MediaStream([
-        ...videoStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks(),
-      ]);
-
-      const mimeCandidates = [
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm',
-      ];
-      const mime = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m));
-      const recorder = new MediaRecorder(
-        combinedStream,
-        mime ? { mimeType: mime, videoBitsPerSecond: 5_000_000 } : { videoBitsPerSecond: 5_000_000 },
-      );
-      activeRecorderRef.current = recorder;
-
-      const chunks: BlobPart[] = [];
-      recorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
-      };
-
-      const stoppedPromise = new Promise<Blob>((resolve) => {
-        recorder.onstop = () => {
-          viewportRef.current?.stopVideoCaptureStream();
-          const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
-          resolve(blob);
-        };
+      const blob = await renderScenesDeterministically({
+        scenes: scenesToRender,
+        viewport,
+        format: targetFormat,
+        showOnScreenText: true,
+        fps: 24,
+        shouldCancel: () => cancelRenderRef.current,
+        resolveAudioSrc: async (sc) =>
+          `/api/vault/episodes/${episode.id}/audio/${sc.sceneNumber}`,
+        onSceneStart: (sc) => {
+          setMonitorScene({
+            action: sc.action,
+            storyActivity: sc.storyActivity,
+            directorBlocks: sc.directorBlocks,
+            durationSeconds: sc.durationSeconds,
+            scriptCue: `${sc.title} ${sc.visualDescription} ${sc.narrationCue}`,
+            cameraPreset: sc.cameraPreset,
+            lightingMood: sc.lightingMood,
+            stageSet: sc.stageSet,
+            intensity: sc.lipSyncIntensity || 1.05,
+            onScreenText: sc.onScreenText || '',
+          });
+          setRenderJob((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  sceneNumber: sc.sceneNumber,
+                }
+              : null,
+          );
+        },
+        onProgress: (label) => {
+          setRenderJob((prev) =>
+            prev ? { ...prev, progressLabel: label } : null,
+          );
+        },
       });
 
-      recorder.start(250);
-
-      for (let i = 0; i < scenesToRender.length; i++) {
-        if (cancelRenderRef.current) break;
-        const sc = scenesToRender[i];
-        setRenderJob((prev) =>
-          prev
-            ? {
-                ...prev,
-                sceneNumber: sc.sceneNumber,
-                progressLabel:
-                  scenesToRender.length === 1
-                    ? `Recording Scene ${sc.sceneNumber}...`
-                    : `Recording S${String(sc.sceneNumber).padStart(2, '0')} (${i + 1}/${scenesToRender.length})`,
-              }
-            : null,
-        );
-        await playEpisodeSceneThroughAnalyser(episode.id, sc);
-        if (!cancelRenderRef.current && i < scenesToRender.length - 1) {
-          await workerDelay(160);
-        }
-      }
-
-      await workerDelay(220);
-      if (recorder.state === 'recording') {
-        recorder.stop();
-      }
-      activeRecorderRef.current = null;
-
-      const blob = await stoppedPromise;
-      if (blob.size > 0 && !cancelRenderRef.current) {
+      if (blob && blob.size > 0 && !cancelRenderRef.current) {
         await saveRenderedVideoBlob(storageKey, blob);
         await refreshCachedMeta();
         if (mode !== 'clip') {
@@ -589,19 +395,12 @@ export function DailyVaultView({
           setPreviewVideoUrls((prev) => ({ ...prev, [episode.id]: objUrl }));
         }
         if (autoDownloadBase) {
-          const fmt = downloadFormat || exportFormat;
-          if (fmt !== 'webm') {
-            setRenderJob((prev) =>
-              prev ? { ...prev, progressLabel: `Converting ${fmt.toUpperCase()}...` } : prev,
-            );
-          }
-          await downloadBlobInSelectedFormat(blob, autoDownloadBase, fmt);
+          triggerBlobDownload(blob, `${autoDownloadBase}.${targetFormat}`);
         }
       }
 
       return !cancelRenderRef.current;
     } catch (err) {
-      viewportRef.current?.stopVideoCaptureStream();
       setRenderError(err instanceof Error ? err.message : 'Failed to extract 3D video.');
       return false;
     } finally {
@@ -611,10 +410,9 @@ export function DailyVaultView({
 
   const handleStopRender = () => {
     cancelRenderRef.current = true;
-    activeAudioElRef.current?.pause();
-    if (activeRecorderRef.current?.state === 'recording') {
-      activeRecorderRef.current.stop();
-    }
+    setRenderJob((prev) =>
+      prev ? { ...prev, progressLabel: 'Stopping...' } : null,
+    );
   };
 
   const handleRenderAllMissing = async () => {
@@ -675,6 +473,8 @@ export function DailyVaultView({
       setMonitorScene({
         action: first.action,
         storyActivity: first.storyActivity,
+        directorBlocks: first.directorBlocks,
+        durationSeconds: first.durationSeconds,
         scriptCue: `${first.title} ${first.visualDescription} ${first.narrationCue}`,
         cameraPreset: first.cameraPreset,
         lightingMood: first.lightingMood,
@@ -877,6 +677,8 @@ export function DailyVaultView({
                 ref={viewportRef}
                 action={monitorScene.action}
                 storyActivity={monitorScene.storyActivity}
+                directorBlocks={monitorScene.directorBlocks}
+                sceneDurationSec={monitorScene.durationSeconds}
                 scriptCue={monitorScene.scriptCue}
                 cameraPreset={monitorScene.cameraPreset}
                 lightingMood={monitorScene.lightingMood}

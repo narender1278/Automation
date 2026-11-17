@@ -14,7 +14,9 @@ export type StoryActivity =
   | 'climb_ascent'
   | 'scholar_study'
   | 'duel_overcome'
-  | 'triumph_raise';
+  | 'triumph_raise'
+  | 'crossroads_meeting'
+  | 'mentorship_dialogue';
 
 export type CameraPreset =
   | 'wide_stage'
@@ -30,7 +32,44 @@ export type LightingMood =
 export type StageSet =
   | 'philosopher_pillar'
   | 'summit_overlook'
-  | 'ancient_archive';
+  | 'ancient_archive'
+  | 'crossroads_cafe';
+
+export type ActorPosture = 'walk' | 'stand' | 'sit_left' | 'sit_right';
+
+export type ActorGesture =
+  | 'talk'
+  | 'listen_nod'
+  | 'shake_hands'
+  | 'wave_bye'
+  | 'hammer_strike'
+  | 'raise_torch'
+  | 'read_scroll'
+  | 'duel_guard'
+  | 'celebrate';
+
+export type BeatCameraShot =
+  | 'wide_establishing'
+  | 'two_shot'
+  | 'table_dialogue'
+  | 'closeup_hero'
+  | 'low_hero'
+  | 'track_motion';
+
+export interface DirectorBeat {
+  startPct: number;
+  endPct: number;
+  heroX: number;
+  heroZ: number;
+  heroPosture: ActorPosture;
+  heroGesture: ActorGesture;
+  compX: number;
+  compZ: number;
+  compPosture: ActorPosture;
+  compGesture: ActorGesture;
+  faceMode: 'each_other' | 'camera' | 'path' | 'table';
+  cameraShot: BeatCameraShot;
+}
 
 export type VoiceName = 'Charon' | 'Kore' | 'Fenrir' | 'Puck' | 'Zephyr';
 
@@ -117,6 +156,7 @@ export interface SceneItem {
   durationSeconds: number;
   action: CharacterAction;
   storyActivity?: StoryActivity;
+  directorBlocks?: DirectorBeat[];
   cameraPreset: CameraPreset;
   lightingMood: LightingMood;
   stageSet: StageSet;

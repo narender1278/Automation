@@ -690,21 +690,31 @@ For each scene, provide:
 - onScreenText (concise high-impact text overlay, max 6 words)
 - durationSeconds (integer seconds)
 - action (choose the best fit from: "idle_breath", "storyteller_gesture", "emphasize_point", "heroic_stance", "reflective_nod", "dramatic_lean")
-- storyActivity (physical 3D multi-figure enactment that brings the script beat alive, choose from: "orator_walk" for pacing & addressing viewer, "forge_labor" for crafting/hard work/building, "climb_ascent" for ascending steps/journey/persistence, "scholar_study" for reading/writing/reflection at lectern, "duel_overcome" for confronting adversity/fear/obstacle, "triumph_raise" for victory/breakthrough/raising torch)
+- storyActivity (physical 3D multi-figure enactment summary, choose from: "crossroads_meeting", "mentorship_dialogue", "orator_walk", "forge_labor", "climb_ascent", "scholar_study", "duel_overcome", "triumph_raise")
+- directorBlocks (REQUIRED array of 2 to 4 chronological physical choreography beats spanning startPct=0 to endPct=100 that act out this exact scene's story! Each beat moves, faces, sits, talks, nods, shakes hands, strikes anvil, climbs, waves, or leaves as the script describes:
+  * startPct, endPct (numbers 0..100, contiguous e.g. 0-30, 30-60, 60-85, 85-100)
+  * heroX, heroZ (3D coordinates: X in -4.8..4.8, Z in -3.0..2.5; when sitting on crossroads_cafe use chair coords left=(2.96,-2.55) or right=(4.24,-2.55); on other stageSets use left=(-0.64,-0.35) or right=(0.64,-0.35))
+  * heroPosture ("walk" | "stand" | "sit_left" | "sit_right")
+  * heroGesture ("talk" | "listen_nod" | "shake_hands" | "wave_bye" | "hammer_strike" | "raise_torch" | "read_scroll" | "duel_guard" | "celebrate")
+  * compX, compZ (companion 3D coordinates -4.8..4.8, -3.0..2.5; keep >= 0.7m apart from hero unless shaking hands)
+  * compPosture ("walk" | "stand" | "sit_left" | "sit_right")
+  * compGesture ("talk" | "listen_nod" | "shake_hands" | "wave_bye" | "hammer_strike" | "raise_torch" | "read_scroll" | "duel_guard" | "celebrate")
+  * faceMode ("each_other" | "camera" | "path" | "table")
+  * cameraShot ("wide_establishing" | "two_shot" | "table_dialogue" | "closeup_hero" | "low_hero" | "track_motion"))
 - cameraPreset (choose the best fit from: "wide_stage", "medium_shot", "closeup_lipsync", "low_hero")
 - lightingMood (choose the best fit from: "warm_dawn", "torchlit_mythic", "obsidian_studio")
-- stageSet (choose the best fit from: "philosopher_pillar", "summit_overlook", "ancient_archive")
+- stageSet (choose the best fit from: "crossroads_cafe" for street meetings/conversations/table talks/partings, "philosopher_pillar" for classic speeches/duels/forges, "summit_overlook" for mountain climbs/victories, "ancient_archive" for study/wisdom/scrolls)
 - voiceName ("Charon" by default, or "Fenrir" / "Kore")
 - lipSyncIntensity (number between 0.8 and 1.35)
 
-Vary storyActivity and cameraPreset across scenes so characters visibly walk, work, climb, confront obstacles, and enact the script rather than standing still.`;
+IMPORTANT: Write vivid, non-static directorBlocks for EVERY scene so the 3D characters physically walk across the set, turn toward each other, sit down cleanly when a table/chair fits the story, gesture while talking, nod, shake hands, wave bye, or work props exactly matching narrationCue and visualDescription!`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-4-hydrogen',
       contents: prompt,
       config: {
         systemInstruction:
-          'You are a video creative director and 3D stage choreographer. Ensure visual consistency and tight alignment between spoken narration and 3D character performance.',
+          'You are a video creative director and 3D stage choreographer. Ensure visual consistency and tight spatial blocking in directorBlocks so characters physically act out every script beat.',
         thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
         responseMimeType: 'application/json',
         responseSchema: {
@@ -754,7 +764,88 @@ Vary storyActivity and cameraPreset across scenes so characters visibly walk, wo
                       'scholar_study',
                       'duel_overcome',
                       'triumph_raise',
+                      'crossroads_meeting',
+                      'mentorship_dialogue',
                     ],
+                  },
+                  directorBlocks: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        startPct: { type: Type.NUMBER },
+                        endPct: { type: Type.NUMBER },
+                        heroX: { type: Type.NUMBER },
+                        heroZ: { type: Type.NUMBER },
+                        heroPosture: {
+                          type: Type.STRING,
+                          enum: ['walk', 'stand', 'sit_left', 'sit_right'],
+                        },
+                        heroGesture: {
+                          type: Type.STRING,
+                          enum: [
+                            'talk',
+                            'listen_nod',
+                            'shake_hands',
+                            'wave_bye',
+                            'hammer_strike',
+                            'raise_torch',
+                            'read_scroll',
+                            'duel_guard',
+                            'celebrate',
+                          ],
+                        },
+                        compX: { type: Type.NUMBER },
+                        compZ: { type: Type.NUMBER },
+                        compPosture: {
+                          type: Type.STRING,
+                          enum: ['walk', 'stand', 'sit_left', 'sit_right'],
+                        },
+                        compGesture: {
+                          type: Type.STRING,
+                          enum: [
+                            'talk',
+                            'listen_nod',
+                            'shake_hands',
+                            'wave_bye',
+                            'hammer_strike',
+                            'raise_torch',
+                            'read_scroll',
+                            'duel_guard',
+                            'celebrate',
+                          ],
+                        },
+                        faceMode: {
+                          type: Type.STRING,
+                          enum: ['each_other', 'camera', 'path', 'table'],
+                        },
+                        cameraShot: {
+                          type: Type.STRING,
+                          enum: [
+                            'wide_establishing',
+                            'two_shot',
+                            'table_dialogue',
+                            'closeup_hero',
+                            'low_hero',
+                            'track_motion',
+                          ],
+                        },
+                      },
+                      required: [
+                        'startPct',
+                        'endPct',
+                        'heroX',
+                        'heroZ',
+                        'heroPosture',
+                        'heroGesture',
+                        'compX',
+                        'compZ',
+                        'compPosture',
+                        'compGesture',
+                        'faceMode',
+                        'cameraShot',
+                      ],
+                    },
                   },
                   cameraPreset: {
                     type: Type.STRING,
@@ -766,7 +857,12 @@ Vary storyActivity and cameraPreset across scenes so characters visibly walk, wo
                   },
                   stageSet: {
                     type: Type.STRING,
-                    enum: ['philosopher_pillar', 'summit_overlook', 'ancient_archive'],
+                    enum: [
+                      'philosopher_pillar',
+                      'summit_overlook',
+                      'ancient_archive',
+                      'crossroads_cafe',
+                    ],
                   },
                   voiceName: {
                     type: Type.STRING,
@@ -786,6 +882,7 @@ Vary storyActivity and cameraPreset across scenes so characters visibly walk, wo
                   'durationSeconds',
                   'action',
                   'storyActivity',
+                  'directorBlocks',
                   'cameraPreset',
                   'lightingMood',
                   'stageSet',
@@ -1115,6 +1212,239 @@ ${topicOrScript}`;
       }
     },
   );
+
+  // DETERMINISTIC OFFLINE SCENE RENDER (Binary JPEG frames + WAV -> exact A/V locked MP4)
+  app.post(
+    '/api/studio/render-scene',
+    express.raw({ type: 'application/octet-stream', limit: '250mb' }),
+    async (req, res) => {
+      const rawJobId = String(req.query.jobId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      const sceneIndex = Math.max(0, Math.min(999, Number(req.query.sceneIndex) || 0));
+      const fps = Math.max(12, Math.min(60, Number(req.query.fps) || 24));
+      const returnClip = req.query.returnClip === '1';
+      const returnFormat =
+        req.query.format === 'mkv' ? 'mkv' : req.query.format === 'webm' ? 'webm' : 'mp4';
+
+      const buf = Buffer.isBuffer(req.body) ? req.body : null;
+      if (!buf || buf.length < 8) {
+        return res.status(400).json({ error: 'Invalid render frame pack.' });
+      }
+
+      const jobDir = path.join(os.tmpdir(), 'storyline-renders', rawJobId || crypto.randomUUID());
+      const framesDir = path.join(jobDir, `frames_${String(sceneIndex).padStart(3, '0')}`);
+
+      try {
+        await fs.promises.mkdir(framesDir, { recursive: true });
+
+        let offset = 0;
+        const frameCount = buf.readUInt32LE(offset);
+        offset += 4;
+        if (frameCount === 0 || frameCount > 15_000) {
+          return res.status(400).json({ error: `Invalid frame count (${frameCount}).` });
+        }
+
+        for (let i = 0; i < frameCount; i++) {
+          if (offset + 4 > buf.length) {
+            return res.status(400).json({ error: 'Truncated frame length header.' });
+          }
+          const frameLen = buf.readUInt32LE(offset);
+          offset += 4;
+          if (offset + frameLen > buf.length) {
+            return res.status(400).json({ error: 'Truncated frame payload.' });
+          }
+          const framePath = path.join(framesDir, `frame_${String(i).padStart(5, '0')}.jpg`);
+          await fs.promises.writeFile(framePath, buf.subarray(offset, offset + frameLen));
+          offset += frameLen;
+        }
+
+        let audioPath: string | null = null;
+        if (offset + 4 <= buf.length) {
+          const audioLen = buf.readUInt32LE(offset);
+          offset += 4;
+          if (audioLen > 0 && offset + audioLen <= buf.length) {
+            audioPath = path.join(jobDir, `audio_${String(sceneIndex).padStart(3, '0')}.wav`);
+            await fs.promises.writeFile(audioPath, buf.subarray(offset, offset + audioLen));
+          }
+        }
+
+        const sceneMp4 = path.join(jobDir, `scene_${String(sceneIndex).padStart(3, '0')}.mp4`);
+        const framePattern = path.join(framesDir, 'frame_%05d.jpg');
+        const durationSec = (frameCount / fps).toFixed(3);
+
+        const args = audioPath
+          ? [
+              '-y',
+              '-framerate',
+              String(fps),
+              '-i',
+              framePattern,
+              '-i',
+              audioPath,
+              '-c:v',
+              'libx264',
+              '-preset',
+              'veryfast',
+              '-crf',
+              '20',
+              '-pix_fmt',
+              'yuv420p',
+              '-r',
+              String(fps),
+              '-c:a',
+              'aac',
+              '-ar',
+              '44100',
+              '-ac',
+              '2',
+              '-b:a',
+              '192k',
+              '-shortest',
+              '-movflags',
+              '+faststart',
+              sceneMp4,
+            ]
+          : [
+              '-y',
+              '-framerate',
+              String(fps),
+              '-i',
+              framePattern,
+              '-f',
+              'lavfi',
+              '-t',
+              durationSec,
+              '-i',
+              'anullsrc=channel_layout=stereo:sample_rate=44100',
+              '-c:v',
+              'libx264',
+              '-preset',
+              'veryfast',
+              '-crf',
+              '20',
+              '-pix_fmt',
+              'yuv420p',
+              '-r',
+              String(fps),
+              '-c:a',
+              'aac',
+              '-ar',
+              '44100',
+              '-ac',
+              '2',
+              '-b:a',
+              '192k',
+              '-shortest',
+              '-movflags',
+              '+faststart',
+              sceneMp4,
+            ];
+
+        await execFileAsync('ffmpeg', args, { timeout: 180_000 });
+        await fs.promises.rm(framesDir, { recursive: true, force: true }).catch(() => {});
+        if (audioPath) await fs.promises.unlink(audioPath).catch(() => {});
+
+        if (returnClip) {
+          let sendPath = sceneMp4;
+          if (returnFormat === 'mkv') {
+            sendPath = path.join(jobDir, `clip_${sceneIndex}.mkv`);
+            await execFileAsync('ffmpeg', ['-y', '-i', sceneMp4, '-c', 'copy', sendPath], {
+              timeout: 60_000,
+            });
+          } else if (returnFormat === 'webm') {
+            sendPath = path.join(jobDir, `clip_${sceneIndex}.webm`);
+            await execFileAsync(
+              'ffmpeg',
+              ['-y', '-i', sceneMp4, '-c:v', 'libvpx', '-b:v', '4M', '-c:a', 'libopus', sendPath],
+              { timeout: 120_000 },
+            );
+          }
+          const outBuf = await fs.promises.readFile(sendPath);
+          await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+          res.setHeader(
+            'Content-Type',
+            returnFormat === 'mkv'
+              ? 'video/x-matroska'
+              : returnFormat === 'webm'
+                ? 'video/webm'
+                : 'video/mp4',
+          );
+          return res.send(outBuf);
+        }
+
+        const stat = await fs.promises.stat(sceneMp4);
+        return res.json({ ok: true, sceneIndex, sizeBytes: stat.size });
+      } catch (err) {
+        console.error('FFmpeg render-scene error:', err);
+        await fs.promises.rm(framesDir, { recursive: true, force: true }).catch(() => {});
+        return res.status(500).json({
+          error: err instanceof Error ? err.message : 'Failed to encode rendered 3D scene.',
+        });
+      }
+    },
+  );
+
+  // CONCATENATE RENDERED SCENE MP4 CLIPS INTO FINAL MP4 / MKV / WEBM
+  app.post('/api/studio/finalize-video', async (req, res) => {
+    const rawJobId = String(req.body?.jobId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const sceneCount = Math.max(1, Math.min(200, Number(req.body?.sceneCount) || 1));
+    const format =
+      req.body?.format === 'mkv' ? 'mkv' : req.body?.format === 'webm' ? 'webm' : 'mp4';
+
+    if (!rawJobId) {
+      return res.status(400).json({ error: 'jobId is required.' });
+    }
+    const jobDir = path.join(os.tmpdir(), 'storyline-renders', rawJobId);
+    const listPath = path.join(jobDir, 'concat.txt');
+    const mergedMp4 = path.join(jobDir, 'final.mp4');
+    const finalPath = path.join(jobDir, `final.${format}`);
+
+    try {
+      const entries: string[] = [];
+      for (let i = 0; i < sceneCount; i++) {
+        const clipPath = path.join(jobDir, `scene_${String(i).padStart(3, '0')}.mp4`);
+        if (fs.existsSync(clipPath)) {
+          entries.push(`file '${clipPath.replace(/'/g, "'\\''")}'`);
+        }
+      }
+      if (entries.length === 0) {
+        return res.status(400).json({ error: 'No rendered scene clips found for this job.' });
+      }
+
+      await fs.promises.writeFile(listPath, entries.join('\n'), 'utf8');
+      await execFileAsync(
+        'ffmpeg',
+        ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', '-movflags', '+faststart', mergedMp4],
+        { timeout: 180_000 },
+      );
+
+      if (format === 'mkv') {
+        await execFileAsync('ffmpeg', ['-y', '-i', mergedMp4, '-c', 'copy', finalPath], {
+          timeout: 120_000,
+        });
+      } else if (format === 'webm') {
+        await execFileAsync(
+          'ffmpeg',
+          ['-y', '-i', mergedMp4, '-c:v', 'libvpx', '-b:v', '4M', '-c:a', 'libopus', finalPath],
+          { timeout: 180_000 },
+        );
+      }
+
+      const outBuf = await fs.promises.readFile(finalPath);
+      res.setHeader(
+        'Content-Type',
+        format === 'mkv' ? 'video/x-matroska' : format === 'webm' ? 'video/webm' : 'video/mp4',
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="storyline-video.${format}"`);
+      return res.send(outBuf);
+    } catch (err) {
+      console.error('FFmpeg finalize-video error:', err);
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to stitch scene clips into video.',
+      });
+    } finally {
+      await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 
   // STAGE 5: TITLE & THUMBNAIL EXPERT + YOUTUBE DESCRIPTION
   app.post('/api/studio/packaging', async (req, res) => {
